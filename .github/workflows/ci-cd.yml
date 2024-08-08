@@ -24,7 +24,7 @@ jobs:
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+        aws-region: us-east-1
 
     - name: Login to Amazon ECR
       id: login-ecr
@@ -51,11 +51,18 @@ jobs:
         aws ecs wait services-stable --cluster ${{ env.ECS_CLUSTER }} \
                                      --services ${{ env.ECS_SERVICE }}
 
+    - name: Get running task IP
+      id: get-task-ip
+      run: |
+        TASK_ARN=$(aws ecs list-tasks --cluster ${{ env.ECS_CLUSTER }} --service-name ${{ env.ECS_SERVICE }} --query 'taskArns[0]' --output text)
+        ENI_ID=$(aws ecs describe-tasks --cluster ${{ env.ECS_CLUSTER }} --tasks $TASK_ARN --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text)
+        PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids $ENI_ID --query 'NetworkInterfaces[0].Association.PublicIp' --output text)
+        echo "PUBLIC_IP=$PUBLIC_IP" >> $GITHUB_ENV
+
     - name: Run integration tests
       run: |
-        # Add your integration test commands here
         echo "Running integration tests..."
-        # Example: curl -f http://your-load-balancer-url || exit 1
+        curl -f http://$PUBLIC_IP || exit 1
 
     - name: Rollback on failure
       if: failure()
