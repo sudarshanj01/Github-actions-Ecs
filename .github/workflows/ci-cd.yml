@@ -1,0 +1,74 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: my-ecr-repo
+  ECS_SERVICE: my-ecs-service
+  ECS_CLUSTER: my-ecs-cluster
+  CONTAINER_NAME: my-container
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+    - name: Update ECS service
+      run: |
+        aws ecs update-service --cluster ${{ env.ECS_CLUSTER }} \
+                               --service ${{ env.ECS_SERVICE }} \
+                               --force-new-deployment
+
+    - name: Wait for ECS service to stabilize
+      run: |
+        aws ecs wait services-stable --cluster ${{ env.ECS_CLUSTER }} \
+                                     --services ${{ env.ECS_SERVICE }}
+
+    - name: Run integration tests
+      run: |
+        # Add your integration test commands here
+        echo "Running integration tests..."
+        # Example: curl -f http://your-load-balancer-url || exit 1
+
+    - name: Rollback on failure
+      if: failure()
+      run: |
+        # Rollback to the previous task definition
+        TASK_DEFINITION=$(aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} \
+                                                    --services ${{ env.ECS_SERVICE }} \
+                                                    --query 'services[0].taskDefinition' \
+                                                    --output text)
+        PREVIOUS_REVISION=$(($(echo $TASK_DEFINITION | awk -F':' '{print $2}') - 1))
+        PREVIOUS_TASK_DEFINITION="${TASK_DEFINITION%:*}:$PREVIOUS_REVISION"
+        
+        aws ecs update-service --cluster ${{ env.ECS_CLUSTER }} \
+                               --service ${{ env.ECS_SERVICE }} \
+                               --task-definition $PREVIOUS_TASK_DEFINITION \
+                               --force-new-deployment
